@@ -8,10 +8,12 @@ package proto
 
 const (
 	RpcKaktusNodeCapabilities               = "NodeCapabilities"
+	RpcKaktusGetLibvirtEndpoint             = "GetLibvirtEndpoint"
 	RpcKaktusCreateInstance                 = "CreateInstance"
 	RpcKaktusGetInstance                    = "GetInstance"
 	RpcKaktusUpdateInstance                 = "UpdateInstance"
 	RpcKaktusDeleteInstance                 = "DeleteInstance"
+	RpcKaktusMigrateInstance                = "MigrateInstance"
 	RpcKaktusGetInstanceState               = "GetInstanceState"
 	RpcKaktusGetInstanceRemoteConnectionUrl = "GetInstanceRemoteConnectionUrl"
 	RpcKaktusInstanceIsRunning              = "InstanceIsRunning"
@@ -49,6 +51,22 @@ type KaktusNodeCapabilitiesReply struct {
 	Memory           uint64
 	GuestEmulator    string
 	GuestMachineName string
+}
+
+/*
+ * RPC GetLibvirtEndpoint()
+ *
+ * Reports how another Kaktus node can reach this node's libvirtd over the
+ * network, for peer-to-peer live migration (see MigrateInstance()). Always
+ * queried live, never cached: this is transient node config, not a
+ * capability worth persisting.
+ */
+
+type KaktusGetLibvirtEndpointArgs struct{}
+type KaktusGetLibvirtEndpointReply struct {
+	Protocol string // "tcp" or "tls"
+	Address  string
+	Port     int
 }
 
 /*
@@ -94,6 +112,24 @@ type KaktusUpdateInstanceArgs struct {
 }
 
 type KaktusUpdateInstanceReply struct{}
+
+/*
+ * RPC MigrateInstance()
+ *
+ * Sent to the *source* Kaktus node hosting the instance. DestinationURI is
+ * a full libvirt connection URI (e.g. "qemu+tls://kaktus-042.internal:16514/system"),
+ * built by the caller from a prior GetLibvirtEndpoint() call against the
+ * destination node. This triggers a live, peer-to-peer migration: the
+ * source libvirtd itself dials the destination and drives the handshake,
+ * so no second connection is required by the agent.
+ */
+
+type KaktusMigrateInstanceArgs struct {
+	Name           string
+	DestinationURI string
+}
+
+type KaktusMigrateInstanceReply struct{}
 
 /*
  * RPC GetInstanceState()
