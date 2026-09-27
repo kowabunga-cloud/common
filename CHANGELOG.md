@@ -1,5 +1,8 @@
 ## unreleased (yyyy-mm-dd)
 
+## 0.65.0 (20260-09-27)
+* **NEW**: **kaktus**: extend RPC with libvirt connection info retrieval and instance migration support.
+
 ## 0.64.0 (2025-12-30)
 * **BREAKING CHANGE**: deprecate complete OSX build (failed Ceph libraries dependency).
 * **NEW**: implemented public API **v0.53.2**.
