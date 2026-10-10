@@ -1,6 +1,17 @@
 ## unreleased (yyyy-mm-dd)
 
-## 0.65.0 (20260-09-27)
+## 0.66.0 (2026-10-10)
+* **NEW**: requires Go SDK 1.27.
+* **NEW**: **metadata**: agent-managed instances (Kawaii, Konvey) authenticate metadata requests with their agent credentials. Required by Kahuna to serve their metadata, which holds secrets.
+* **NEW**: **wsrpc**: add client `Done()` channel, closed once connection is over (`Terminated` channel is deprecated).
+* **NEW**: install latest golangci-lint, govulncheck and gosec with local Go SDK.
+* **NEW**: Update build dependencies.
+* **BUG**: **wsrpc**: client termination is signalled only once, fixing goroutines leaking on each closed connection.
+* **BUG**: **wsrpc**: client pending calls fail as soon as connection is closed, instead of waiting for 1 hour timeout.
+* **BUG**: **wsrpc**: client discards late responses to timed out requests, which made the next call fail.
+* **BUG**: **wsrpc**: serialize server responses and keepalive writes, preventing concurrent WebSocket writes from corrupting frames.
+
+## 0.65.0 (2026-09-27)
 * **NEW**: **kaktus**: extend RPC with libvirt connection info retrieval and instance migration support.
 
 ## 0.64.0 (2025-12-30)
