@@ -57,7 +57,7 @@ import (
 type WsRpcServer struct {
 	conn       *websocket.Conn
 	writeMutex sync.Mutex // serializes concurrent RPC handlers responses
-	serviceMap sync.Map // map[string]*service
+	serviceMap sync.Map   // map[string]*service
 	methods    []string
 	debug      bool
 	terminated chan bool
