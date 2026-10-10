@@ -56,6 +56,7 @@ import (
 
 type WsRpcServer struct {
 	conn       *websocket.Conn
+	writeMutex sync.Mutex // serializes concurrent RPC handlers responses
 	serviceMap sync.Map // map[string]*service
 	methods    []string
 	debug      bool
@@ -252,12 +253,16 @@ func (server *WsRpcServer) sendResponse(resp *RpcResponse) error {
 		return err
 	}
 
-	err = server.conn.WriteMessage(websocket.BinaryMessage, msg)
+	// requests are handled concurrently, while the WebSocket connection
+	// supports only one concurrent writer
+	server.writeMutex.Lock()
+	defer server.writeMutex.Unlock()
+
+	err = server.conn.SetWriteDeadline(time.Now().Add(writeWait))
 	if err != nil {
 		return err
 	}
-
-	return nil
+	return server.conn.WriteMessage(websocket.BinaryMessage, msg)
 }
 
 func (server *WsRpcServer) pumpMessages() {
@@ -302,11 +307,8 @@ func (server *WsRpcServer) keepalive() {
 
 	for {
 		<-ticker.C
-		err := server.conn.SetWriteDeadline(time.Now().Add(writeWait))
-		if err != nil {
-			return
-		}
-		err = server.conn.WriteMessage(websocket.PingMessage, nil)
+		// WriteControl is safe for use concurrently with responses writes
+		err := server.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
 		if err != nil {
 			return
 		}
@@ -345,8 +347,8 @@ func (server *WsRpcServer) Listen() error {
 		// waiting (with timeout) for the server to close the connection.
 
 		// send proper close notification
-		err := server.conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		err := server.conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(writeWait))
 		if err != nil {
 			klog.Errorf("Unable to properly shutdown connection: %s", err)
 			return nil // still, explicit request to shutdown
