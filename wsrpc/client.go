@@ -19,12 +19,21 @@ import (
 )
 
 type WsRpcClient struct {
-	mutex      sync.Mutex // protects following
-	seq        uint64
-	conn       *websocket.Conn
-	response   chan []byte
+	mutex sync.Mutex // protects following
+	seq   uint64
+	conn  *websocket.Conn
+
+	response chan []byte
+
+	// Terminated receives a single value once the connection is over.
+	//
+	// Deprecated: use Done(), which can be waited on by any number of
+	// goroutines.
 	Terminated chan bool
-	debug      bool
+
+	done          chan struct{}
+	terminateOnce sync.Once
+	debug         bool
 }
 
 func NewWsRpcClient(conn *websocket.Conn, debug bool) *WsRpcClient {
@@ -33,6 +42,7 @@ func NewWsRpcClient(conn *websocket.Conn, debug bool) *WsRpcClient {
 		debug:      debug,
 		response:   make(chan []byte, 1),
 		Terminated: make(chan bool, 1),
+		done:       make(chan struct{}),
 	}
 
 	// register pong handler, keeping websocket alive
@@ -50,12 +60,33 @@ func NewWsRpcClient(conn *websocket.Conn, debug bool) *WsRpcClient {
 	return &client
 }
 
+// Done returns a channel that is closed once the connection is over, whether
+// it's been closed locally or remotely, or broken.
+func (client *WsRpcClient) Done() <-chan struct{} {
+	return client.done
+}
+
+// terminate closes the underlying connection and signals termination, only
+// once, however many routines detect it.
+func (client *WsRpcClient) terminate() {
+	client.terminateOnce.Do(func() {
+		close(client.done)
+		err := client.conn.Close()
+		if err != nil {
+			klog.Debugf("wsrpc: closing connection: %v", err)
+		}
+		// buffered, sent only once: never blocks
+		client.Terminated <- true
+	})
+}
+
 func (client *WsRpcClient) pumpMessages() {
+	defer client.terminate()
+
 	for {
 		// ensure we have a proper connection
 		if client.conn == nil {
 			klog.Errorf("wsrpc: no underlying WebSocket connection")
-			client.Terminated <- true
 			return
 		}
 
@@ -65,18 +96,17 @@ func (client *WsRpcClient) pumpMessages() {
 			if websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
 				klog.Infof("wsrpc: unexpected remote client connection closure detected")
 			}
-			errC := client.conn.Close()
-			if errC != nil {
-				klog.Errorf("wsrpc: unable to properly close connection: %v", err)
-			}
-			client.Terminated <- true
 			return
 		}
 
 		switch mt {
 		case websocket.BinaryMessage:
 			// deliver pumped message to channel, ready to be processed by caller
-			client.response <- message
+			select {
+			case client.response <- message:
+			case <-client.done:
+				return
+			}
 		default:
 			klog.Infof("Handling other type of message: %d", mt)
 		}
@@ -85,31 +115,28 @@ func (client *WsRpcClient) pumpMessages() {
 
 func (client *WsRpcClient) keepalive() {
 	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		klog.Errorf("remote WebSocket disconnection detected")
-		ticker.Stop()
-		err := client.conn.Close()
-		if err != nil {
-			klog.Errorf("wsrpc: unable to properly close connection: %v", err)
-		}
-		client.Terminated <- true
-	}()
+	defer ticker.Stop()
 
 	for {
-		<-ticker.C
-		err := client.conn.SetWriteDeadline(time.Now().Add(writeWait))
-		if err != nil {
+		select {
+		case <-client.done:
 			return
-		}
-		err = client.conn.WriteMessage(websocket.PingMessage, nil)
-		if err != nil {
-			return
+		case <-ticker.C:
+			// WriteControl is safe for use concurrently with RPC requests writes
+			err := client.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
+			if err != nil {
+				klog.Errorf("remote WebSocket disconnection detected")
+				client.terminate()
+				return
+			}
 		}
 	}
 }
 
+// Close closes the connection, terminating any pending call.
 func (client *WsRpcClient) Close() error {
-	return client.conn.Close()
+	client.terminate()
+	return nil
 }
 
 func (client *WsRpcClient) newRequest(serviceMethod string, args any) *RpcRequest {
@@ -136,37 +163,60 @@ func (client *WsRpcClient) sendRequest(req *RpcRequest) error {
 	}
 
 	// write RPC request to server
+	err = client.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	if err != nil {
+		client.terminate()
+		return err
+	}
 	err = client.conn.WriteMessage(websocket.BinaryMessage, msg)
 	if err != nil {
-		client.Terminated <- true
+		client.terminate()
 		return err
 	}
 
 	return nil
 }
 
-func (client *WsRpcClient) getResponse(reply any) (*RpcResponse, error) {
+func (client *WsRpcClient) getResponse(id uint64, reply any) (*RpcResponse, error) {
+	timeout := time.After(WsCloseResponseTimeout)
 
 	// dequeue (with timeout) messages from handler, whichever comes first
-	select {
-	case message := <-client.response:
-		resp := RpcResponse{
-			Result: reply, // pointer to reply, for unmarshalling into
-		}
+	for {
+		select {
+		case message := <-client.response:
+			// discard late responses to previous (timed out) requests
+			var header struct {
+				Id uint64 `json:"id"`
+			}
+			err := json.Unmarshal(message, &header)
+			if err != nil {
+				return nil, err
+			}
+			if header.Id != id {
+				klog.Infof("wsrpc: discarding stale response to request %d", header.Id)
+				continue
+			}
 
-		// read RPC reply from server
-		err := json.Unmarshal(message, &resp)
-		if err != nil {
-			return &resp, err
-		}
+			resp := RpcResponse{
+				Result: reply, // pointer to reply, for unmarshalling into
+			}
 
-		if client.debug {
-			klog.Debugf("WsRpcResponse: %#v", resp)
-		}
+			// read RPC reply from server
+			err = json.Unmarshal(message, &resp)
+			if err != nil {
+				return &resp, err
+			}
 
-		return &resp, nil
-	case <-time.After(WsCloseResponseTimeout):
-		return nil, errors.New("wsrpc: timeout")
+			if client.debug {
+				klog.Debugf("WsRpcResponse: %#v", resp)
+			}
+
+			return &resp, nil
+		case <-client.done:
+			return nil, errors.New("wsrpc: connection closed")
+		case <-timeout:
+			return nil, errors.New("wsrpc: timeout")
+		}
 	}
 }
 
@@ -183,7 +233,7 @@ func (client *WsRpcClient) Call(serviceMethod string, args any, reply any) error
 		return err
 	}
 
-	resp, err := client.getResponse(reply)
+	resp, err := client.getResponse(req.Id, reply)
 	if err != nil {
 		klog.Errorf("unable to read RPC response: %s", err)
 		return err
