@@ -17,6 +17,7 @@ import (
 	"github.com/kdomanski/iso9660"
 	"github.com/kowabunga-cloud/common/klog"
 	"github.com/kowabunga-cloud/common/metadata"
+	"github.com/kowabunga-cloud/common/ws"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,6 +103,13 @@ func GetInstanceMetadataRaw(settings CloudInitInstanceMetaDataSettings) (map[str
 
 	req.Header.Set(HttpHeaderKowabungaSourceIP, settings.LocalIP)
 	req.Header.Set(HttpHeaderKowabungaInstanceID, settings.InstanceID)
+
+	// agent-managed instances (e.g. Kawaii, Konvey) authenticate with their
+	// agent credentials: their metadata holds secrets (e.g. IPsec keys)
+	if settings.ControllerAgentID != "" && settings.ControllerAgentToken != "" {
+		req.Header.Set(ws.WsHeaderAgentId, settings.ControllerAgentID)
+		req.Header.Set(ws.WsHeaderAgentApiKey, settings.ControllerAgentToken)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
