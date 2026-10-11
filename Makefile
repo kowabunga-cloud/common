@@ -52,6 +52,10 @@ update: ; $(info $(M) updating modules…) @
 bin: ; $(info $(M) create local bin directory) @
 	$Q mkdir -p $(BINDIR)
 
+.PHONY: build
+build: ; $(info $(M) building…) @ ## Build all packages
+	$Q go build ./...
+
 .PHONY: tests
 tests: ; $(info $(M) testing Kowabunga suite…) @
 	$Q go test ./... -count=1 -coverprofile=coverage.txt
