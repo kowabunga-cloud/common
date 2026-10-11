@@ -1,5 +1,3 @@
-## unreleased (yyyy-mm-dd)
-
 ## 0.66.0 (2026-10-10)
 * **NEW**: requires Go SDK 1.27.
 * **NEW**: **metadata**: agent-managed instances (Kawaii, Konvey) authenticate metadata requests with their agent credentials. Required by Kahuna to serve their metadata, which holds secrets.
